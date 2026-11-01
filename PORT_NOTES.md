@@ -37,7 +37,7 @@ traceback in the trial artifacts. That is data about the baseline, not a lost ru
 | change | why |
 |---|---|
 | `.openaikey` added to `.gitignore` | upstream ignores `.openrouterkey` but not this; the key was one `git add -A` from being published |
-| `capx/third_party/b1k` repointed from `qingh097/b1k` to `felixzheng02/BEHAVIOR-1K`, pinned to `314bf7a8d`, branch `v3.9.3-uv-5090` | upstream's pin is BEHAVIOR v3.7.2 / Isaac Sim 4.5, which cannot run on RTX 50-series. Kept as a provenance pin only — not checked out, not installed from. The environment imports the editable install at `~/BEHAVIOR-1K` |
+| `capx/third_party/b1k` repointed from `qingh097/b1k` to `felixzheng02/BEHAVIOR-1K`, pinned to `314bf7a8d`, branch `v3.9.3-uv-5090` | upstream's pin is BEHAVIOR v3.7.2 / Isaac Sim 4.5, which cannot run on RTX 50-series. Kept as a provenance pin only — not checked out, not installed from. The environment imports the editable install at `~/behavior_sim/BEHAVIOR-1K` |
 
 ## Port: what each v3.9.3 delta became
 

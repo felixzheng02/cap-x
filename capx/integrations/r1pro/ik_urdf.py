@@ -45,11 +45,23 @@ _ASSET_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 def ensure_r1pro_ik_urdf(force: bool = False) -> str:
     """Return the path to r1pro_ik.urdf, generating it from the stock URDF if needed."""
     out_path = os.path.join(_ASSET_DIR, "r1pro_ik.urdf")
+    src_dir = os.path.join(get_dataset_path("omnigibson-robot-assets"), "models", "r1pro", "urdf")
+    src_path = os.path.join(src_dir, "r1pro.urdf")
+
+    # Mesh references are relative ("meshes/..."), so they must resolve next to the URDF. Repair
+    # the symlink before the early return: os.path.islink() is True for a dangling link, so a
+    # moved repo or dataset would otherwise leave it broken forever.
+    os.makedirs(_ASSET_DIR, exist_ok=True)
+    link = os.path.join(_ASSET_DIR, "meshes")
+    target = os.path.join(src_dir, "meshes")
+    if os.path.islink(link) and os.path.realpath(link) != os.path.realpath(target):
+        os.remove(link)
+    if not os.path.exists(link):
+        os.symlink(target, link)
+
     if os.path.exists(out_path) and not force:
         return out_path
 
-    src_dir = os.path.join(get_dataset_path("omnigibson-robot-assets"), "models", "r1pro", "urdf")
-    src_path = os.path.join(src_dir, "r1pro.urdf")
     if not os.path.exists(src_path):
         raise FileNotFoundError(f"Stock R1Pro URDF not found at {src_path}")
 
@@ -76,11 +88,6 @@ def ensure_r1pro_ik_urdf(force: bool = False) -> str:
             f"pyroki_joint_mapping assumes.\n  got:      {actuated}\n  expected: {EXPECTED_IK_JOINTS}"
         )
 
-    os.makedirs(_ASSET_DIR, exist_ok=True)
-    # Mesh references are relative ("meshes/..."), so they must resolve next to the URDF.
-    link = os.path.join(_ASSET_DIR, "meshes")
-    if not os.path.islink(link) and not os.path.exists(link):
-        os.symlink(os.path.join(src_dir, "meshes"), link)
     tree.write(out_path, encoding="utf-8", xml_declaration=True)
     return out_path
 
