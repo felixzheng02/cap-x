@@ -52,6 +52,7 @@ import random
 from omnigibson.eval.utils.score_utils import load_human_stats
 from omnigibson.eval.utils.eval_utils import TEST_INSTANCE_IDS, NUM_PUBLIC_TEST_INSTANCES
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
+from omnigibson.tasks.behavior_task import get_presampled_robot_poses
 from capx.envs.simulators._b1k_compat import ArmSwitchablePrimitives
 
 # Make sure object states are enabled
@@ -129,11 +130,14 @@ class R1ProBehaviourLowLevel(BaseEnv):
         save_video: bool = False,
         activity_name: str | None = None,
         instance_mode: str = "public_test",
+        presampled_pose_key: str | None = None,
         *args, **kwargs
     ) -> None:
         super().__init__()
         # Which 2026 challenge split task instances are loaded from: train / public_test / hidden_test.
         self.instance_mode = instance_mode
+        # Fallback pose key for instances that store robot poses per model rather than generically.
+        self.presampled_pose_key = presampled_pose_key
         # Accept an absolute/relative path as well as a bare name resolved against
         # OmniGibson's config dir, so cap-x can ship its own BEHAVIOR config.
         config_filename = (
@@ -246,8 +250,13 @@ class R1ProBehaviourLowLevel(BaseEnv):
         for tro_key, tro_state in tro_state.items():
             if tro_key == "robot_poses":
                 presampled_robot_poses = tro_state
-                robot_pos = presampled_robot_poses[self.robot.model][0]["position"]
-                robot_quat = presampled_robot_poses[self.robot.model][0]["orientation"]
+                # v3.9.3 instances store poses under a generic "robot" key; only 2025 carry-over
+                # tasks key them by robot model, which is what upstream assumed unconditionally.
+                poses = get_presampled_robot_poses(
+                    presampled_robot_poses, self.robot.model, pose_key=self.presampled_pose_key
+                )
+                robot_pos = poses[0]["position"]
+                robot_quat = poses[0]["orientation"]
                 self.robot.set_position_orientation(robot_pos, robot_quat)
                 # Write robot poses to scene metadata
                 self.env.scene.write_task_metadata(key=tro_key, data=tro_state)
