@@ -1,20 +1,28 @@
 # BEHAVIOR-1K v3.9.3 config for cap-x's R1ProBehaviourLowLevel.
-# Copied from OmniGibson's r1pro_behavior.yaml with three changes, all of which cap-x's
-# BEHAVIOR fork had baked into its own copy:
+#
+# Built from OmniGibson's r1pro_primitives.yaml, NOT r1pro_behavior.yaml: cap-x drives the
+# robot by streaming absolute joint positions through robot.q_to_action, which asserts every
+# controller is a position-mode JointController with use_delta_commands=false. Only the
+# primitives config satisfies that. The stock primitives config ends in `task: DummyTask`, so
+# the BehaviorTask block is grafted in from r1pro_behavior.yaml.
+#
+# Three further changes, all of which cap-x's own BEHAVIOR fork had baked into its copy:
 #   - the external sensor is named external_camera (cap-x indexes it by that name)
-#   - seg_instance is added to obs_modalities, for ground-truth perception
-#   - load_room_types is null so any task can find its objects
+#   - obs_modalities gains depth_linear (read by get_env_observation) and seg_instance
+#   - scene_model and load_room_types are overridden per task at runtime from the challenge
+#     metadata, so whatever they say here is irrelevant
 env:
+  action_frequency: 30                  # (int): environment executes action at the action_frequency rate
+  physics_frequency: 120                # (int): physics frequency (1 / physics_timestep for physx)
   device: null                          # (None or str): specifies the device to be used if running on the gpu with torch backend
   automatic_reset: false                # (bool): whether to automatic reset after an episode finishes
   flatten_action_space: false           # (bool): whether to flatten the action space as a sinle 1D-array
   flatten_obs_space: false              # (bool): whether the observation space should be flattened when generated
   use_external_obs: false               # (bool): Whether to use external observations or not
-  initial_pos_z_offset: 0.1
   external_sensors:                     # (None or list): If specified, list of sensor configurations for external sensors to add. Should specify sensor "type" and any additional kwargs to instantiate the sensor. Each entry should be the kwargs passed to @create_sensor, in addition to position, orientation
     - sensor_type: VisionSensor
       name: external_camera
-      relative_prim_path: /external_sensor0
+      relative_prim_path: /external_camera
       modalities: [rgb, depth]
       sensor_kwargs:
         image_height: 128
@@ -30,30 +38,61 @@ render:
 
 scene:
   type: InteractiveTraversableScene
-  scene_model: house_double_floor_lower
+  scene_model: Rs_int
   trav_map_resolution: 0.1
   default_erosion_radius: 0.0
   trav_map_with_objects: true
   num_waypoints: 1
   waypoint_resolution: 0.2
+  load_object_categories: null
   not_load_object_categories: null
-  load_room_types: null
+  load_room_types: ["living_room"]
   load_room_instances: null
+  load_task_relevant_only: false
   seg_map_resolution: 1.0
   scene_source: OG
-  include_robots: true
+  include_robots: false
 
-robots: 
+robots:
   - type: R1Pro
-    obs_modalities: [rgb, depth, seg_instance]
+    obs_modalities: [rgb, depth, depth_linear, seg_instance]
     include_sensor_names: null
     exclude_sensor_names: null
     scale: 1.0
-    self_collision: false
-    action_normalize: true
+    self_collisions: true
+    action_normalize: false
     action_type: continuous
-    grasping_mode: physical
-    default_reset_mode: tuck
+    grasping_mode: sticky
+    reset_joint_pos: [
+      0.0000,
+      -0.0000,
+      0.0247,
+      0.0009,
+      0.0004,
+      -0.0000,
+      0.0000,
+      0.0000,
+      0.0000,
+      0.0000,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0300,
+      0.0300,
+      0.0300,
+      0.0300,
+    ]
     sensor_config:
       VisionSensor:
         sensor_kwargs:
@@ -62,45 +101,39 @@ robots:
     controller_config:
       base:
         name: HolonomicBaseJointController
-        motor_type: velocity
-        vel_kp: 150
-        command_input_limits: default
-        command_output_limits: default
+        motor_type: position
+        command_input_limits: null
         use_impedances: false
       trunk:
         name: JointController
         motor_type: position
-        pos_kp: 150
-        command_input_limits: default
-        command_output_limits: default
-        use_impedances: false
+        command_input_limits: null
         use_delta_commands: false
+        use_impedances: false
       arm_left:
         name: JointController
         motor_type: position
-        pos_kp: 150
-        command_input_limits: default
-        command_output_limits: default
-        use_impedances: false
+        command_input_limits: null
         use_delta_commands: false
+        use_impedances: false
       arm_right:
         name: JointController
         motor_type: position
-        pos_kp: 150
-        command_input_limits: default
-        command_output_limits: default
-        use_impedances: false
+        command_input_limits: null
         use_delta_commands: false
+        use_impedances: false
       gripper_left:
-        name: MultiFingerGripperController
-        mode: smooth
-        command_input_limits: default
-        command_output_limits: default
+        name: JointController
+        motor_type: position
+        command_input_limits: null
+        use_delta_commands: false
+        use_impedances: false
       gripper_right:
-        name: MultiFingerGripperController
-        mode: smooth
-        command_input_limits: default
-        command_output_limits: default
+        name: JointController
+        motor_type: position
+        command_input_limits: null
+        use_delta_commands: false
+        use_impedances: false
 
 objects: []
 

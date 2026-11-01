@@ -103,3 +103,36 @@ smoke test still renders. Side effects to be aware of: `websockets` 17.4 → 16.
 | `control.py:813` (`sample_grasp_pose_simple`) | passes the natural-language `object_name` into `_sample_grasp_pose`, which does `scene.object_registry("name", obj_name)`. Any name the model would actually write resolves to `None` and crashes in `get_grasp_poses_for_object_sticky`. The privileged API sidesteps it by passing the resolved `obj.name` |
 | all 48 `env_configs/r1pro/b1k_*.yaml` | none sets a scene, so every task not living in the base config's scene fails at env creation. Worked around by resolving `scene_model` from the challenge metadata, the way BEHAVIOR's evaluator does |
 | `r1pro_b1k.py` `__init__` | builds `StarterSemanticActionPrimitives` — and therefore a cuRobo motion generator — unconditionally, although only `move_hand` and `_navigate_to_pose` use it. Grasping goes through pyroki. So cuRobo is a hard dependency of merely constructing the environment |
+
+## Deltas found by running it (probe sequence, each verified)
+
+| symptom | cause | fix |
+|---|---|---|
+| `KeyError: 'r1pro'` in `load_task_instance` | v3.9.3 instances store robot poses under a generic `"robot"` key; only 2025 carry-overs key them by model, which upstream assumed unconditionally | use the stock `get_presampled_robot_poses`, plus a `presampled_pose_key` kwarg for the carry-over case |
+| `AttributeError: 'Robot' object has no attribute 'is_system'` | scope entities lost `is_system`/`exists`, and scope values can now be `None` | decide from the BDDL instance name with `is_system_bddl_inst(inst)`, exactly as `eval/evaluator.py` does |
+| `AttributeError: 'AgentMetric' object has no attribute 'end_callback'` | the metric lifecycle was renamed: `start_callback`/`step_callback`/`end_callback`/`gather_results` → `reset`/`step`/`aggregate` | ported all four call sites; `step` now receives action/obs/reward/terminated/truncated/info as v3.9.3 expects |
+| `KeyError: 'depth_linear'` in `get_env_observation` | their fork's config requested `depth_linear`; the stock configs do not | added to `obs_modalities` |
+| `AssertionError: Controller [gripper_left] should be a JointController ... use_delta_commands=False` | the config was based on `r1pro_behavior.yaml`, whose controllers are the defaults. cap-x streams absolute joint positions through `q_to_action`, which requires the primitives-style controllers | rebuilt `r1pro_behavior_capx.yaml` from `r1pro_primitives.yaml` and grafted the BehaviorTask block in |
+
+### Verified working end to end (ground-truth perception, cuRobo skipped)
+
+`bringing_water`, public_test instance 301, in 166 s: env build, `reset`, `step`,
+`get_object_pose` (a bottle at the right pose, 0.075 x 0.075 x 0.259 m), `get_env_observation`
+(128x128 rgb + depth), `get_robot_position`, `get_current_joint_positions` (28),
+`check_object_in_hand` (which exercises `_settle_robot` -> `q_to_action`), `compute_reward`
+returning BEHAVIOR's q_score (0.0), and `task_completed` (False).
+
+The task's real goal, worth knowing before reading any score:
+`for every bottle, the bottle is on top of coffee_table1` **and** `electric_refrigerator1 is
+not open` — two bottles out of a fridge, onto a table in another room, with the fridge closed
+again. It is not a one-pick task.
+
+### Open: cuRobo
+
+`R1ProBehaviourLowLevel.__init__` builds `StarterSemanticActionPrimitives`, which builds a
+`CuRoboMotionGenerator` unconditionally, so **cuRobo is required merely to construct the
+environment** — even though only `move_hand` and `navigate_to_pose` use it and grasping goes
+through pyroki. `nvidia-curobo` is not installed here and there is no `nvcc` / CUDA toolkit on
+this machine, so installing it means a per-user CUDA 12.8 toolkit first. The probes above pass
+`skip_curobo_initilization=True`, which is not a usable configuration for a real run on this
+task because it needs cross-room navigation.

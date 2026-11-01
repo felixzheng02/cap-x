@@ -53,6 +53,7 @@ from omnigibson.eval.utils.score_utils import load_human_stats
 from omnigibson.eval.utils.eval_utils import TEST_INSTANCE_IDS, NUM_PUBLIC_TEST_INSTANCES
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
 from omnigibson.tasks.behavior_task import get_presampled_robot_poses
+from omnigibson.utils.bddl_utils import is_system_bddl_inst
 from capx.envs.simulators._b1k_compat import ArmSwitchablePrimitives
 
 # Make sure object states are enabled
@@ -268,8 +269,11 @@ class R1ProBehaviourLowLevel(BaseEnv):
         # causes some jitter (maybe for small mass / thin objects?)
         for _ in range(25):
             og.sim.step_physics()
-            for entity in self.env.task.object_scopes[0].values():
-                if not entity.is_system and entity.exists:
+            # v3.9.3 scope entities have no `is_system`/`exists`; the stock evaluator decides
+            # from the BDDL instance name instead, and scope values can be None for objects the
+            # task has not created yet.
+            for inst, entity in self.env.task.object_scopes[0].items():
+                if not is_system_bddl_inst(inst) and entity is not None:
                     entity.keep_still()
 
         self.env.scene.update_initial_file()
@@ -328,7 +332,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
             self.load_task_instance(0)
             
         for metric in self.metrics:
-            metric.start_callback(self.env)
+            metric.reset(self.env)
             
         self.step_num = 0
         
@@ -355,7 +359,10 @@ class R1ProBehaviourLowLevel(BaseEnv):
         self._record_frame()
         
         for metric in self.metrics:
-            metric.step_callback(self.env)
+            metric.step(
+                env=self.env, action=action, obs=obs, reward=reward,
+                terminated=bool(terminated), truncated=bool(truncated), info=info,
+            )
         return obs, reward, terminated, truncated, info
     
     
@@ -409,11 +416,9 @@ class R1ProBehaviourLowLevel(BaseEnv):
         if 'trash' in self.task_name:
             return self.pick_up_trash_reward()
 
-        for metric in self.metrics:
-            metric.end_callback(self.env)
         metrics = {}
         for metric in self.metrics:
-            metrics.update(metric.gather_results())
+            metrics.update(metric.aggregate(self.env))
             
         if self.task_completed():
             return 1

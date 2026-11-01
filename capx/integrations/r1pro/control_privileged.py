@@ -39,9 +39,14 @@ def _without_perception_servers():
             saved[name] = getattr(_control, name)
 
             def _stub(_name=name):
-                def _unavailable(*args, **kwargs):
-                    raise RuntimeError(f"{_name} is unavailable in the privileged API")
-                return _unavailable
+                # The parent calls these factories in __init__ and stores what they return, so the
+                # stub must itself be callable and hand back a placeholder that only fails if the
+                # returned function is actually used.
+                def _factory(*args, **kwargs):
+                    def _unavailable(*a, **k):
+                        raise RuntimeError(f"{_name} is unavailable in the privileged API")
+                    return _unavailable
+                return _factory
 
             setattr(_control, name, _stub())
     try:
