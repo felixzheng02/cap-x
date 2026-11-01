@@ -7,8 +7,10 @@ import numpy as np
 from scipy.spatial import ConvexHull
 import numpy.typing as npt
 import omnigibson.utils.transform_utils as T
-from omnigibson import ROBOT_ASSETS_ROOT
-print(ROBOT_ASSETS_ROOT)
+from omnigibson.utils.asset_utils import get_dataset_path
+
+# v3.9.3 no longer exports ROBOT_ASSETS_ROOT from the omnigibson package root.
+ROBOT_ASSETS_ROOT = get_dataset_path("omnigibson-robot-assets")
 
 def relative_pose_transform(pos1, quat1, pos0, quat0):
     """

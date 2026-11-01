@@ -10,6 +10,7 @@ import concurrent.futures
 import copy
 import json
 import os
+from pathlib import Path
 import random
 import time
 from collections.abc import Iterable
@@ -177,6 +178,39 @@ def _completions_to_responses_convert_prompt(prompt: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+OPENAI_KEY_FILE = ".openaikey"
+
+
+def register_model(model_id: str | None) -> None:
+    """Let an arbitrary model id through the hardcoded model tables.
+
+    GPT_MODELS selects the OpenAI payload shape, and VLM_MODELS membership is asserted before
+    any visual feedback is used, so a model id chosen at the command line has to be added to
+    both or it is silently routed down the wrong path.
+    """
+    if not model_id:
+        return
+    for table in (GPT_MODELS, VLM_MODELS):
+        if model_id not in table:
+            table.append(model_id)
+
+
+def resolve_api_key(args) -> "str | None":
+    """API key from --api-key, else the git-ignored .openaikey file, else OPENAI_API_KEY.
+
+    Mirrors the .openrouterkey convention of their OpenRouter proxy.
+    """
+    if getattr(args, "api_key", None):
+        return args.api_key
+    path = Path(OPENAI_KEY_FILE)
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line
+    return os.getenv("OPENAI_API_KEY")
+
+
 def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     """Query vLLM server for code generation.
 
@@ -193,7 +227,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     else:
         server_url = args.server_url
 
-    if args.model in GPT_MODELS:
+    if args.model in GPT_MODELS or "api.openai.com" in server_url:
         if "codex" in args.model:
             prompt = _completions_to_responses_convert_prompt(prompt)
             payload = {
@@ -236,11 +270,13 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
             "max_tokens": args.max_tokens,
             "messages": prompt,
         }
+    # OpenRouter-style "vendor/model" ids are sent verbatim; the OpenAI API rejects the prefix.
+    if "api.openai.com" in server_url and str(payload.get("model", "")).startswith("openai/"):
+        payload["model"] = payload["model"].split("/", 1)[1]
     headers = {"Content-Type": "application/json"}
-    if args.api_key:
-        headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
-        headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
+    api_key = resolve_api_key(args)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     start_time = time.time()
 
     # keep calling until it works
@@ -296,7 +332,7 @@ def query_model_streaming(
     Yields:
         Partial response chunks as they arrive
     """
-    if args.model in GPT_MODELS:
+    if args.model in GPT_MODELS or "api.openai.com" in server_url:
         payload = {
             "model": args.model,
             "reasoning_effort": args.reasoning_effort,
@@ -322,11 +358,13 @@ def query_model_streaming(
             "stream": True,
         }
 
+    # OpenRouter-style "vendor/model" ids are sent verbatim; the OpenAI API rejects the prefix.
+    if "api.openai.com" in server_url and str(payload.get("model", "")).startswith("openai/"):
+        payload["model"] = payload["model"].split("/", 1)[1]
     headers = {"Content-Type": "application/json"}
-    if args.api_key:
-        headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
-        headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
+    api_key = resolve_api_key(args)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     full_content = ""
     full_reasoning = ""

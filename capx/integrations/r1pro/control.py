@@ -37,6 +37,7 @@ from capx.integrations.r1pro.utils import *
 
 from capx.integrations.motion import pyroki_snippets as pks
 from capx.integrations.motion.pyroki_context import get_pyroki_context  # type: ignore
+from capx.integrations.r1pro.ik_urdf import ensure_r1pro_ik_urdf
 from viser.extras import ViserUrdf
 import os
 from capx.utils.video_utils import _write_video
@@ -139,7 +140,7 @@ class R1ProControlApi(ApiBase):
         self.cfg = None
         
         self._TCP_OFFSET = np.array([0.0, 0.2, 0.0], dtype=np.float64)
-        ctx = get_pyroki_context(os.path.join(ROBOT_ASSETS_ROOT, "models/r1pro/urdf/r1pro_ik.urdf"), target_link_name="left_gripper_link")
+        ctx = get_pyroki_context(ensure_r1pro_ik_urdf(), target_link_name="left_gripper_link")
         self._pks = pks
         self._robot = ctx.robot
         torso_1_joint_idx = self._robot.joints.actuated_names.index("torso_joint1")

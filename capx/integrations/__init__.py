@@ -118,7 +118,9 @@ register_api("FrankaRealControlApi", lambda env: FrankaControlApi(env, tcp_offse
 
 try:
     from .r1pro.control import R1ProControlApi
+    from .r1pro.control_privileged import R1ProControlPrivilegedApi
     register_api("R1ProControlApi", lambda env: R1ProControlApi(env, use_sam3=True))
+    register_api("R1ProControlPrivilegedApi", R1ProControlPrivilegedApi)
 except ImportError:
     print("R1Pro not installed, skipping R1Pro APIs")
 

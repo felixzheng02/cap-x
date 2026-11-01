@@ -38,3 +38,68 @@ traceback in the trial artifacts. That is data about the baseline, not a lost ru
 |---|---|
 | `.openaikey` added to `.gitignore` | upstream ignores `.openrouterkey` but not this; the key was one `git add -A` from being published |
 | `capx/third_party/b1k` repointed from `qingh097/b1k` to `felixzheng02/BEHAVIOR-1K`, pinned to `314bf7a8d`, branch `v3.9.3-uv-5090` | upstream's pin is BEHAVIOR v3.7.2 / Isaac Sim 4.5, which cannot run on RTX 50-series. Kept as a provenance pin only — not checked out, not installed from. The environment imports the editable install at `~/BEHAVIOR-1K` |
+
+## Port: what each v3.9.3 delta became
+
+| upstream | v3.9.3 | resolution |
+|---|---|---|
+| `holonomic_base_command_in_world_frame(robot, q)` wrapping every `q_to_action` call (7 sites) | helper removed | Dropped the wrapper. v3.7's helper converted root-frame → world-frame because that release's `HolonomicBaseJointController` wanted world-frame; v3.9.3's `q_to_action` documents that it takes **root-frame** `q` and does the base-footprint conversion itself. Input convention is unchanged, so passing `q` straight through is equivalent |
+| `StarterSemanticActionPrimitives.overwrite_arm(idx)` (5 sites) | `arm` is a read-only property | `ArmSwitchablePrimitives` in `capx/envs/simulators/_b1k_compat.py`. `overwrite_arm` was **not** stock BEHAVIOR: their fork commented out the `arm` property to make it assignable, so the shim restores their behaviour without patching BEHAVIOR |
+| `env.robots[0]`, `env.task.object_scope`, `env.external_sensors[...]`, `env.step()`/`get_obs()` returns | all per-parallel-env now | Indexed with `[0]`; this wrapper drives a single env |
+| `omnigibson.learning.utils.eval_utils` | `omnigibson.eval.utils` | re-pointed |
+| hand-rolled aggregation of `2025-challenge-task-instances/metadata/episodes.jsonl` | `2026-challenge-task-instances/metadata/task.jsonl` | replaced with the stock `score_utils.load_human_stats(task_name)`, which returns the same four keys |
+| hand-built 2025 instance paths | `get_task_instance_path(scene, instance, mode)` | mirrors how `omnigibson/eval/evaluator.py` builds the same path |
+| trial index used directly as an instance id | public test ids are 301-320, hidden 321-340 | `instance_mode` kwarg (default `public_test`); trial `n` maps to `TEST_INSTANCE_IDS[n]`, so runs line up with the challenge's `--instance-indices` |
+| `robot.model_name` | `robot.model` | renamed |
+| `from omnigibson import ROBOT_ASSETS_ROOT` | not exported | `get_dataset_path("omnigibson-robot-assets")`, keeping the module-level name so `import *` consumers are unaffected. A stray `print(ROBOT_ASSETS_ROOT)` at import time was dropped with it |
+| `models/r1pro/urdf/r1pro_ik.urdf` | not in the v3.9.3 dataset | reconstructed exactly — see below |
+| `controller_cfg="r1pro_primitives.yaml"` | that file now ends in `task: type: DummyTask` | default changed to cap-x's own `capx/envs/configs/b1k/r1pro_behavior_capx.yaml`; the loader now accepts a path as well as a bare name |
+
+### The reconstructed IK URDF
+
+`R1ProControlApi` loads an 18-DoF `r1pro_ik.urdf` that ships with their BEHAVIOR fork but not with
+v3.9.3, whose dataset has only the full 28-DoF `r1pro.urdf`. Substituting the 28-DoF file would be
+**silently wrong**: `pyroki_joint_mapping` and `controller_joint_mapping` are hardcoded 18-element
+permutations, so a 28-joint IK solution would land on the wrong controller joints.
+
+The file is exactly reconstructable. Fixing the 6 wheel/steer joints and the 4 gripper finger
+joints in the stock URDF leaves exactly 18 actuated joints in document order —
+`torso_joint1..4, left_arm_joint1..7, right_arm_joint1..7` — which is precisely the ordering both
+hardcoded mappings imply. `capx/integrations/r1pro/ik_urdf.py` generates it and asserts that
+order, failing loudly rather than silently if the stock URDF ever changes.
+
+### Ground-truth perception
+
+`capx/integrations/r1pro/control_privileged.py` subclasses `R1ProControlApi` and overrides only
+the detection methods, resolving objects through the task object scope. Function names,
+signatures and docstrings are inherited unchanged, which matters because `ApiBase.combined_doc()`
+generates the prompt from them. It stubs the perception-server constructors for the duration of
+the parent's `__init__` rather than reimplementing it, so the pyroki context, joint mappings and
+thresholds stay exactly as upstream set them. No SAM3 / ContactGraspNet / Molmo servers needed.
+
+### LLM access
+
+`.openaikey` (git-ignored, same convention as their `.openrouterkey`) is read by
+`resolve_api_key`. `register_model` adds a command-line model id to `GPT_MODELS` and
+`VLM_MODELS`, which otherwise silently route an unknown id down the wrong payload shape and trip
+the visual-feedback assert. The `openai/` vendor prefix is stripped when posting to the OpenAI
+API, which rejects it. All three apply to both query paths in `client.py`.
+
+### Environment
+
+cap-x is installed into the BEHAVIOR venv (Python 3.11, inside its own `>=3.10,<3.13`) with
+`--no-deps`, because it declares `torch>=2.8` while Isaac Sim 5.1 here is built against
+`torch==2.7.0+cu128`, and because its `sam3` path dependency points at an unchecked-out
+submodule. Added by hand under a constraints file holding torch/numpy: `tyro`, `rich`, `mediapy`,
+`msgpack_numpy`, `open3d`, `yourdfpy`, `robot_descriptions`, `viser`, `pyroki`. Verified
+afterwards that `torch` is still `2.7.0+cu128`, `numpy` still `1.26.0`, and that the BEHAVIOR
+smoke test still renders. Side effects to be aware of: `websockets` 17.4 → 16.1.1 and `psutil`
+5.9.8 → 7.2.2.
+
+## Further defects found during the port — document, do not fix
+
+| where | defect |
+|---|---|
+| `control.py:813` (`sample_grasp_pose_simple`) | passes the natural-language `object_name` into `_sample_grasp_pose`, which does `scene.object_registry("name", obj_name)`. Any name the model would actually write resolves to `None` and crashes in `get_grasp_poses_for_object_sticky`. The privileged API sidesteps it by passing the resolved `obj.name` |
+| all 48 `env_configs/r1pro/b1k_*.yaml` | none sets a scene, so every task not living in the base config's scene fails at env creation. Worked around by resolving `scene_model` from the challenge metadata, the way BEHAVIOR's evaluator does |
+| `r1pro_b1k.py` `__init__` | builds `StarterSemanticActionPrimitives` — and therefore a cuRobo motion generator — unconditionally, although only `move_hand` and `_navigate_to_pose` use it. Grasping goes through pyroki. So cuRobo is a hard dependency of merely constructing the environment |

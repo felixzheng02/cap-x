@@ -200,8 +200,16 @@ def _run_web_ui(args: LaunchArgs, config: dict[str, Any]) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+from capx.llm.client import register_model
+
+
 def main(args: LaunchArgs) -> None:
     """Load config and dispatch to web UI or headless trial execution."""
+    # Model ids are chosen at the command line; register them so the hardcoded
+    # GPT_MODELS/VLM_MODELS tables do not silently route them down the wrong path.
+    register_model(args.model)
+    register_model(args.visual_differencing_model)
+
     from capx.envs.runner import _run_headless_trials, _start_api_servers, _stop_api_servers
 
     start_time = time.time()

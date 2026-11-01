@@ -40,9 +40,6 @@ from omnigibson.utils.asset_utils import get_task_instance_path
 from omnigibson.utils.python_utils import recursively_convert_to_torch
 import json
 import math
-from omnigibson.action_primitives.curobo import (
-    holonomic_base_command_in_world_frame,
-)
 from omnigibson.action_primitives.action_primitive_set_base import (
     ActionPrimitiveError,
 )
@@ -52,16 +49,27 @@ from scipy.spatial import ConvexHull
 import matplotlib.pyplot as plt
 import time
 import random
-from omnigibson.learning.utils.eval_utils import (
-    TASK_NAMES_TO_INDICES,
-)
+from omnigibson.eval.utils.score_utils import load_human_stats
+from omnigibson.eval.utils.eval_utils import TEST_INSTANCE_IDS, NUM_PUBLIC_TEST_INSTANCES
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
+from capx.envs.simulators._b1k_compat import ArmSwitchablePrimitives
 
 # Make sure object states are enabled
 gm.ENABLE_OBJECT_STATES = True
 gm.USE_GPU_DYNAMICS = False
 gm.HEADLESS = True
 # OMNIGIBSON_HEADLESS=1  python...
+
+def _available_task_cfg(activity_name: str, activity_definition_id: int = 0) -> dict:
+    """Per-task entry (scene_model, robot start pose) from the 2026 challenge metadata."""
+    path = os.path.join(gm.DATA_PATH, "2026-challenge-task-instances", "metadata", "available_tasks.yaml")
+    with open(path, "r") as f:
+        available = yaml.load(f, Loader=yaml.FullLoader)
+    if activity_name not in available:
+        raise KeyError(f"{activity_name} is not in {path}")
+    return available[activity_name][activity_definition_id]
+
+
 def execute_controller(ctrl_gen, env):
     for action in ctrl_gen:
         env.step(action)
@@ -116,17 +124,33 @@ class R1ProBehaviourLowLevel(BaseEnv):
 
     def __init__(
         self,
-        controller_cfg: str = "r1pro_primitives.yaml",
+        controller_cfg: str = "r1pro_behavior.yaml",
         privileged: bool = False,
         save_video: bool = False,
         activity_name: str | None = None,
+        instance_mode: str = "public_test",
         *args, **kwargs
     ) -> None:
         super().__init__()
-        config_filename =  os.path.join(og.example_config_path, controller_cfg)
+        # Which 2026 challenge split task instances are loaded from: train / public_test / hidden_test.
+        self.instance_mode = instance_mode
+        # Accept an absolute/relative path as well as a bare name resolved against
+        # OmniGibson's config dir, so cap-x can ship its own BEHAVIOR config.
+        config_filename = (
+            controller_cfg if os.path.exists(controller_cfg)
+            else os.path.join(og.example_config_path, controller_cfg)
+        )
         self.controller_cfg = yaml.load(open(config_filename, "r"), Loader=yaml.FullLoader)
         if activity_name is not None:
             self.controller_cfg['task']['activity_name'] = activity_name
+            # Each BEHAVIOR task lives in one specific scene. cap-x's 48 b1k_*.yaml configs never
+            # set a scene, so without this they all inherit whatever the base config happened to
+            # name and fail for every task that lives elsewhere. Resolve it the way BEHAVIOR's own
+            # evaluator does, from the challenge metadata.
+            task_cfg = _available_task_cfg(
+                activity_name, self.controller_cfg['task'].get('activity_definition_id', 0)
+            )
+            self.controller_cfg['scene']['scene_model'] = task_cfg["scene_model"]
             # Load all rooms so any task can find its required objects
             self.controller_cfg['scene']['load_room_types'] = None
         self.task_name = self.controller_cfg['task']['activity_name']
@@ -141,34 +165,19 @@ class R1ProBehaviourLowLevel(BaseEnv):
         # Load config file
         task_name = self.controller_cfg["task"]['activity_name']
         # Now, get human stats of the task
-        task_idx = TASK_NAMES_TO_INDICES[task_name]
-        self.human_stats = {
-            "length": [],
-            "distance_traveled": [],
-            "left_eef_displacement": [],
-            "right_eef_displacement": [],
-        }
-        with open(os.path.join(gm.DATA_PATH, "2025-challenge-task-instances", "metadata", "episodes.jsonl"), "r") as f:
-            episodes = [json.loads(line) for line in f]
-        for episode in episodes:
-            if episode["episode_index"] // 1e4 == task_idx:
-                for k in self.human_stats.keys():
-                    self.human_stats[k].append(episode[k])
-        # take a mean
-        for k in self.human_stats.keys():
-            self.human_stats[k] = sum(self.human_stats[k]) / len(self.human_stats[k])
+        self.human_stats = load_human_stats(task_name)
         
         self.env = og.Environment(configs=self.controller_cfg)
         
-        self.robot = self.env.robots[0]
-        self.task_relevant_obj = self.env.task.object_scope #keys and values of task relevant objects
+        self.robot = self.env.robots[0][0]
+        self.task_relevant_obj = self.env.task.object_scopes[0] #keys and values of task relevant objects
         self.object_state_key = self.env.task.low_dim_obs_keys # object state values are in state['task']['low_dim']
         print("Initialized Behavior1KLowLevel environment for task: ", self.task_name)
         
         self.metrics = self.load_metrics()
         
         
-        self.controller = StarterSemanticActionPrimitives(self.env, self.env.robots[0], enable_head_tracking=False)
+        self.controller = ArmSwitchablePrimitives(self.env, self.robot, enable_head_tracking=False)
         # torso_joint = self.controller.robot.joints["torso_joint2"]
         self.torso_idx_map = {
             "torso_joint1": 6,
@@ -206,6 +215,13 @@ class R1ProBehaviourLowLevel(BaseEnv):
             test_hidden (bool): [Interal use only] Whether to load the hidden test instance.
         """
         self.env.reset()
+        if self.instance_mode != "train":
+            # Upstream passes the trial counter straight through as an instance id. The 2026
+            # splits number their instances 301-320 (public) and 321-340 (hidden), so map the
+            # trial index onto the challenge ids to stay aligned with --instance-indices.
+            instance_id = TEST_INSTANCE_IDS[
+                instance_id + (NUM_PUBLIC_TEST_INSTANCES if self.instance_mode == "hidden_test" else 0)
+            ]
         scene_model = self.env.task.scene_name
         tro_filename = self.env.task.get_cached_activity_scene_filename(
             scene_model=scene_model,
@@ -213,38 +229,37 @@ class R1ProBehaviourLowLevel(BaseEnv):
             activity_definition_id=self.env.task.activity_definition_id,
             activity_instance_id=instance_id,
         )
-        if test_hidden:
-            tro_file_path = os.path.join(
-                gm.DATA_PATH,
-                "2025-challenge-test-instances",
-                self.env.task.activity_name,
-                f"{tro_filename}-tro_state.json",
+        mode = "hidden_test" if test_hidden else self.instance_mode
+        tro_file_path = get_task_instance_path(
+            scene_model,
+            f"{scene_model}_task_{self.env.task.activity_name}_instances/{tro_filename}-tro_state",
+            mode=mode,
+        )
+        if tro_file_path is None:
+            raise FileNotFoundError(
+                f"No 2026 {mode} instance {instance_id} for {self.env.task.activity_name} "
+                f"in scene {scene_model}."
             )
-        else:
-            tro_file_path = os.path.join(
-                get_task_instance_path(scene_model),
-                f"json/{scene_model}_task_{self.env.task.activity_name}_instances/{tro_filename}-tro_state.json",
-            )
-            
+
         with open(tro_file_path, "r") as f:
             tro_state = recursively_convert_to_torch(json.load(f))
         for tro_key, tro_state in tro_state.items():
             if tro_key == "robot_poses":
                 presampled_robot_poses = tro_state
-                robot_pos = presampled_robot_poses[self.robot.model_name][0]["position"]
-                robot_quat = presampled_robot_poses[self.robot.model_name][0]["orientation"]
+                robot_pos = presampled_robot_poses[self.robot.model][0]["position"]
+                robot_quat = presampled_robot_poses[self.robot.model][0]["orientation"]
                 self.robot.set_position_orientation(robot_pos, robot_quat)
                 # Write robot poses to scene metadata
                 self.env.scene.write_task_metadata(key=tro_key, data=tro_state)
             else:
-                self.env.task.object_scope[tro_key].load_state(tro_state, serialized=False)
+                self.env.task.object_scopes[0][tro_key].load_state(tro_state, serialized=False)
 
         # Try to ensure that all task-relevant objects are stable
         # They should already be stable from the sampled instance, but there is some issue where loading the state
         # causes some jitter (maybe for small mass / thin objects?)
         for _ in range(25):
             og.sim.step_physics()
-            for entity in self.env.task.object_scope.values():
+            for entity in self.env.task.object_scopes[0].values():
                 if not entity.is_system and entity.exists:
                     entity.keep_still()
 
@@ -315,6 +330,8 @@ class R1ProBehaviourLowLevel(BaseEnv):
         self._step_count += 1
         # This is a fallback; normally FrankaControlApi methods are used
         obs, reward, terminated, truncated, info = self.env.step(action)
+        # v3.9.3 returns one entry per parallel env; this wrapper drives a single env.
+        obs, reward, terminated, truncated, info = obs[0], reward[0], terminated[0], truncated[0], info[0]
         # self.observation_buffer.append(obs)
         self.cur_observation = obs
         success = info['done']['success']
@@ -324,7 +341,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
             self.obs_buffer['robot']['ego'].append(obs[f'{robot_key}'][f'{robot_key}:zed_link:Camera:0']['rgb'][:,:,:3])
             self.obs_buffer['robot']['left_wrist'].append(obs[f'{robot_key}'][f'{robot_key}:left_realsense_link:Camera:0']['rgb'][:,:,:3])
             self.obs_buffer['robot']['right_wrist'].append(obs[f'{robot_key}'][f'{robot_key}:right_realsense_link:Camera:0']['rgb'][:,:,:3])
-            self.obs_buffer['external'].append(self.env.external_sensors['external_camera'].get_obs()[0]['rgb'][:,:,:3])
+            self.obs_buffer['external'].append(self.env.external_sensors[0]['external_camera'].get_obs()[0]['rgb'][:,:,:3])
         
         self._record_frame()
         
@@ -434,7 +451,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
 
         """
         obs, info = self.env.get_obs()
-        return obs
+        return obs[0]
     
     
     def update_torso(self, torso_joint_name: str, angle: float, max_steps=50):
@@ -497,7 +514,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         """
         self.controller.overwrite_arm(arm)
         target_joint_positions = self.controller._get_joint_position_with_fingers_at_limit("upper" if open else "lower")
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for _ in range(max_steps):
             self.step(action)
             current_joint_positions = self.robot.get_joint_positions()
@@ -732,7 +749,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         elif arm == 1:
             target_joint_positions[11] -= 0.4
             
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = self.step(action)
             current_joint_positions = self.robot.get_joint_positions()
@@ -756,14 +773,14 @@ class R1ProBehaviourLowLevel(BaseEnv):
         # for idx in range(N):
         #     cur_joint_positions = self.get_joint_positions()
         #     cur_target = cur_joint_positions + (target_joint_positions - cur_joint_positions).clamp(-delta, delta)
-        #     action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, cur_target))
+        #     action = self.robot.q_to_action(cur_target)
         #     for j in range(10):
         #         _ = self.step(action)
         #         current_joint_positions = self.get_joint_positions()
         #         if torch.allclose(current_joint_positions, cur_target, atol=0.005):
         #             break
         
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for idx in range(max_steps):
             _ = self.step(action)
             if idx % int(settle_steps) == 0:
@@ -793,7 +810,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         elif arm == 1:
             target_joint_positions[11] -= 0.4
             
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = self.step(action)
             current_joint_positions = self.robot.get_joint_positions()
@@ -807,7 +824,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
             env.robot.joints.keys()
             dict_keys(['base_footprint_x_joint', 'base_footprint_y_joint', 'base_footprint_z_joint', 'base_footprint_rx_joint', 'base_footprint_ry_joint', 'base_footprint_rz_joint', 'torso_joint1', 'torso_joint2', 'torso_joint3', 'torso_joint4', 'left_arm_joint1', 'right_arm_joint1', 'left_arm_joint2', 'right_arm_joint2', 'left_arm_joint3', 'right_arm_joint3', 'left_arm_joint4', 'right_arm_joint4', 'left_arm_joint5', 'right_arm_joint5', 'left_arm_joint6', 'right_arm_joint6', 'left_arm_joint7', 'right_arm_joint7', 'left_gripper_finger_joint1', 'left_gripper_finger_joint2', 'right_gripper_finger_joint1', 'right_gripper_finger_joint2'])
         """
-        return self.env.robots[0].get_joint_positions()
+        return self.env.robots[0][0].get_joint_positions()
     
     
     def get_robot_eef_pose(self, arm=0) -> dict[str, Any]:
@@ -851,7 +868,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         else:
             action = np.zeros_like(self.robot.action_space.sample())
             obs, reward, terminated, truncated, info = self.env.step(action)
-            success = info['done']['success']
+            success = info[0]['done']['success']
         return success
     
     def enable_video_capture(self, enabled: bool = True, *, clear: bool = True) -> None:
@@ -877,7 +894,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         obs_keys = list(obs.keys())
         robot_key = [key for key in obs_keys if 'robot' in key][0]
         frame ={
-            'rgb': self.env.external_sensors['external_camera'].get_obs()[0]['rgb'][:,:,:3].detach().cpu().numpy().copy(),
+            'rgb': self.env.external_sensors[0]['external_camera'].get_obs()[0]['rgb'][:,:,:3].detach().cpu().numpy().copy(),
             "ego": obs[f'{robot_key}'][f'{robot_key}:zed_link:Camera:0']['rgb'][:,:,:3].detach().cpu().numpy().copy(),
             "left_wrist": obs[f'{robot_key}'][f'{robot_key}:left_realsense_link:Camera:0']['rgb'][:,:,:3].detach().cpu().numpy().copy(),
             "right_wrist": obs[f'{robot_key}'][f'{robot_key}:right_realsense_link:Camera:0']['rgb'][:,:,:3].detach().cpu().numpy().copy()
@@ -944,7 +961,7 @@ def oracle_solution():
         cur_joint_positions = env.get_joint_positions()
         target_joint_positions = cur_joint_positions.clone()
         target_joint_positions[10] -= 0.4
-        action = env.robot.q_to_action(holonomic_base_command_in_world_frame(env.robot, target_joint_positions))
+        action = env.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = env.step(action)
             current_joint_positions = env.robot.get_joint_positions()
@@ -1206,7 +1223,7 @@ if __name__ == "__main__":
         cur_joint_positions = env.get_joint_positions()
         target_joint_positions = cur_joint_positions.clone()
         target_joint_positions[10] -= 0.4
-        action = env.robot.q_to_action(holonomic_base_command_in_world_frame(env.robot, target_joint_positions))
+        action = env.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = env.step(action)
             current_joint_positions = env.robot.get_joint_positions()
