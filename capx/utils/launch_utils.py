@@ -108,6 +108,13 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         "visual_differencing_model": "google/gemini-3.1-pro-preview",
         "visual_differencing_model_server_url": "http://127.0.0.1:8110/chat/completions",
         "visual_differencing_model_api_key": None,
+        # Model/sampling settings were previously CLI-only, so a config could not pin the
+        # model it was written for. These must stay in sync with LaunchArgs' defaults.
+        "model": "google/gemini-3.1-pro-preview",
+        "api_key": None,
+        "temperature": 1.0,
+        "max_tokens": 2048 * 10,
+        "reasoning_effort": "medium",
     }
     for field, cli_default in _CLI_DEFAULTS.items():
         current_value = getattr(args, field, cli_default)
@@ -171,10 +178,22 @@ def _extract_code(content: str) -> list[str]:
     Returns:
         Extracted Python code list
     """
+    # A local model that spends its whole budget on reasoning returns content=None. Guard
+    # here as well as in the client: without this it becomes `TypeError: argument of type
+    # 'NoneType' is not iterable` on turn 0.
+    if not content:
+        return [""]
+
     fence_start = "```python\n"
     fence_end = "```"
     start_idx = 0
     end_idx = len(content) + 1
+    # A bare ``` fence (no language tag) would otherwise leave start_idx at 0 while rfind
+    # still matches the closing fence, swallowing the opening fence and any preamble into
+    # the "code" and guaranteeing a SyntaxError.
+    if fence_start not in content and "```" in content:
+        after = content.split("```", 1)[1]
+        content = after.split("\n", 1)[1] if "\n" in after else after
     if fence_start in content:
         start_idx = content.find(fence_start) + len(fence_start)
         content = content[start_idx:]

@@ -25,6 +25,37 @@ if TYPE_CHECKING:
 # Model constants
 # ---------------------------------------------------------------------------
 
+#: reasoning_effort values that mean "do not think at all".
+_THINKING_OFF = {"off", "none", "false", "disabled", "minimal"}
+#: Default HTTP timeout. At ~20 tok/s a 4096-token reply needs ~205 s, so the historical
+#: 200 s was below a single full-length generation from a locally served model.
+DEFAULT_HTTP_TIMEOUT = 1200
+MAX_HTTP_RETRIES = 3
+
+
+class EmptyContentError(RuntimeError):
+    """The model returned no usable `content`.
+
+    Typically the reasoning trace consumed the whole token budget. This is raised rather than
+    returning None because None silently becomes a *successful* "finish" decision in
+    `_parse_multi_turn_decision`, which makes a starved turn indistinguishable from the agent
+    deciding the task was complete.
+    """
+
+
+def thinking_kwargs(reasoning_effort: str | None) -> tuple[dict, bool]:
+    """Map --reasoning-effort onto Qwen-style chat_template_kwargs.
+
+    Returns (kwargs, thinking_enabled).
+    """
+    effort = (reasoning_effort or "medium").strip().lower()
+    if effort in _THINKING_OFF:
+        return {"enable_thinking": False}, False
+    if effort == "high":  # LaunchArgs documents high; Qwen's scale is low/medium/xhigh
+        effort = "xhigh"
+    return {"reasoning_effort": effort}, True
+
+
 GPT_MODELS = [
     "openai/gpt-5.4",
     "openai/o4-mini",
@@ -42,7 +73,13 @@ VLM_MODELS = [
     "deepseek/deepseek-r1",
     "qwen/qwen3.5-122b-a10b",
     "moonshotai/kimi-k2",
+    # Locally served vision-language models (OpenAI-compatible endpoint, e.g. vLLM).
+    # Membership here is load-bearing: trial.py skips visual feedback for models that are
+    # absent, and asserts on them for image differencing.
+    "qwen3.8-27b",
 ]
+# Additional locally served VLMs, comma-separated, so a new model needs no code edit.
+VLM_MODELS += [m.strip() for m in os.getenv("CAPX_EXTRA_VLM_MODELS", "").split(",") if m.strip()]
 CLAUDE_MODELS = ["anthropic/claude-opus-4-5", "anthropic/claude-haiku-4-5"]
 OSS_MODELS = [
     "deepseek/deepseek-v3.2",
@@ -230,12 +267,23 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
             "max_tokens": args.max_tokens,
         }
     else:
+        # Locally served OpenAI-compatible endpoint (vLLM). chat_template_kwargs is how Qwen3
+        # thinking is controlled per request; without it the server's default (xhigh) applies
+        # and reasoning can consume the entire max_tokens budget.
+        ctk, thinking = thinking_kwargs(getattr(args, "reasoning_effort", "medium"))
         payload = {
             "model": args.model,
             "temperature": args.temperature,
             "max_tokens": args.max_tokens,
             "messages": prompt,
+            "chat_template_kwargs": ctk,
         }
+        # Sampling recommended by the Qwen3.8 model card.
+        payload.update(
+            {"top_p": 0.95, "top_k": 20, "presence_penalty": 0.0}
+            if thinking
+            else {"top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
+        )
     headers = {"Content-Type": "application/json"}
     if args.api_key:
         headers["Authorization"] = f"Bearer {args.api_key}"
@@ -243,17 +291,25 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
         headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
     start_time = time.time()
 
-    # keep calling until it works
+    http_timeout = getattr(args, "http_timeout", None) or DEFAULT_HTTP_TIMEOUT
     response = requests.post(
-        server_url, headers=headers, data=json.dumps(payload), timeout=200
+        server_url, headers=headers, data=json.dumps(payload), timeout=http_timeout
     )
+    # 404 is NOT retried: it means the URL is wrong (a local vLLM serves
+    # /v1/chat/completions, while this repo's defaults say /chat/completions). Retrying it
+    # slept 240s a time, forever, until the trial alarm fired.
+    if response.status_code == 404:
+        raise RuntimeError(
+            f"404 from {server_url!r}. For a local vLLM server the path must include /v1, "
+            f"e.g. http://127.0.0.1:8000/v1/chat/completions. Body: {response.text[:200]}"
+        )
     retry = 1
-    while response.status_code in [404, 500, 502, 503, 504]:
+    while response.status_code in [500, 502, 503, 504] and retry <= MAX_HTTP_RETRIES:
         sleep_time = 240 + random.uniform(-90, 90)
-        print(f"Retry {retry}. Model query failed with status code {response.status_code}. Error: {response.text}. Retrying in {sleep_time} seconds...")
+        print(f"Retry {retry}/{MAX_HTTP_RETRIES}. Model query failed with status code {response.status_code}. Error: {response.text}. Retrying in {sleep_time} seconds...")
         time.sleep(sleep_time)
         response = requests.post(
-            server_url, headers=headers, data=json.dumps(payload), timeout=200
+            server_url, headers=headers, data=json.dumps(payload), timeout=http_timeout
         )
         retry += 1
 
@@ -267,14 +323,28 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     try:
         if args.model in GPT_MODELS and "codex" in args.model:
             out["content"] = body["output_text"]
-        else:
-            out["content"] = body["choices"][0]["message"]["content"]
+            out["reasoning"] = None
+            return out  # type: ignore[return-value]
+        message = body["choices"][0]["message"]
     except (KeyError, IndexError) as exc:
         raise RuntimeError(f"Unexpected response format: {body}") from exc
-    if body.get("choices") is not None:
-        out["reasoning"] = body.get("choices")[0].get("message").get("reasoning", None)
-    else:
-        out["reasoning"] = None
+
+    # vLLM's reasoning parsers emit `reasoning_content`; some other backends use `reasoning`.
+    out["content"] = message.get("content")
+    out["reasoning"] = message.get("reasoning_content") or message.get("reasoning") or None
+
+    if not out["content"]:
+        finish = body["choices"][0].get("finish_reason")
+        usage = body.get("usage", {})
+        if out["reasoning"]:
+            raise EmptyContentError(
+                f"model returned empty content; the reasoning trace consumed the token budget "
+                f"(finish_reason={finish!r}, completion_tokens={usage.get('completion_tokens')}). "
+                f"Raise --max-tokens or lower --reasoning-effort."
+            )
+        raise EmptyContentError(
+            f"model returned empty content and no reasoning (finish_reason={finish!r})."
+        )
     return out  # type: ignore[return-value]
 
 

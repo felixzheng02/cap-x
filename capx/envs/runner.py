@@ -36,8 +36,10 @@ from capx.utils.parallel_eval import run_parallel_with_setup
 # Constants
 # ---------------------------------------------------------------------------
 
-TRIAL_TIMEOUT_SECONDS = 1000
-MAX_TRIAL_RETRIES = 3
+#: A locally served model decodes at ~20 tok/s, so a multi-turn trial (1 initial + N
+#: multi-turn + N visual-differencing calls) can far exceed the original 1000 s.
+TRIAL_TIMEOUT_SECONDS = int(os.getenv("CAPX_TRIAL_TIMEOUT_SECONDS", "3600"))
+MAX_TRIAL_RETRIES = int(os.getenv("CAPX_MAX_TRIAL_RETRIES", "3"))
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +305,13 @@ def _run_single_trial_with_timeout(
             is_timeout = is_timeout or isinstance(exc, _requests.exceptions.Timeout)
         except Exception:
             pass
+
+        # An empty model reply fails THIS trial; it must not abort the whole batch.
+        from capx.llm.client import EmptyContentError
+
+        if isinstance(exc, EmptyContentError):
+            print(f"Trial {trial} failed: {exc}")
+            return _build_timeout_summary(trial, timeout_seconds, partial_artifacts, config, exc)
 
         if not is_timeout:
             raise

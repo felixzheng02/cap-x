@@ -127,3 +127,10 @@ if _libero_available:
     register_api("FrankaLiberoApi", lambda env: FrankaLiberoApi(env, use_sam3=True))
     register_api("FrankaLiberoApiReduced", FrankaLiberoApiReduced)
     register_api("FrankaLiberoApiReducedSkillLibrary", FrankaLiberoApiReducedSkillLibrary)
+# Remote robot: pure-perception API, no privileged simulator state.
+try:
+    from .remote import RemoteRobotApi
+
+    register_api("RemoteRobotApi", RemoteRobotApi)
+except ImportError as _e:
+    print(f"Remote robot API unavailable: {_e}")

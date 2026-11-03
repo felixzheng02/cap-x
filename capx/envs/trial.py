@@ -52,7 +52,9 @@ if TYPE_CHECKING:
     from capx.envs.launch import LaunchArgs
 
 
-MULTITURN_LIMIT = 10
+#: A locally served model decodes at ~20 tok/s, so each extra turn costs minutes. Overridable
+#: so a slow local model can be capped without editing code.
+MULTITURN_LIMIT = int(os.getenv("CAPX_MULTITURN_LIMIT", "10"))
 
 # ---------------------------------------------------------------------------
 # Shared formatting helpers
@@ -502,6 +504,23 @@ def _query_initial_code(
 # Multi-turn decision handling
 # ---------------------------------------------------------------------------
 
+#: Generated robot code prints poses, arrays and segmentation results every loop iteration,
+#: and tracebacks on failure. Unbounded, that overflows a 32K-context model, and the resulting
+#: HTTP 400 is not retried -- it aborts the entire run.
+CONSOLE_TRUNCATE_CHARS = 4000
+
+
+def _truncate_console(text: str | None, limit: int = CONSOLE_TRUNCATE_CHARS) -> str:
+    """Clamp console output, keeping head and tail (the tail holds the traceback)."""
+    if not text:
+        return text or ""
+    if len(text) <= limit:
+        return text
+    head, tail = limit // 2, limit // 2
+    omitted = len(text) - head - tail
+    return f"{text[:head]}\n... [{omitted} characters omitted] ...\n{text[-tail:]}"
+
+
 def _handle_multi_turn_step(
     env: CodeExecutionEnvBase,
     obs: dict[str, Any],
@@ -540,8 +559,8 @@ def _handle_multi_turn_step(
     executed_code = "\n".join(code_blocks[:code_block_idx])
     complete_multi_turn_prompt = multi_turn_prompt.format(
         executed_code=executed_code,
-        console_stdout=info_step["stdout"],
-        console_stderr=info_step["stderr"],
+        console_stdout=_truncate_console(info_step["stdout"]),
+        console_stderr=_truncate_console(info_step["stderr"]),
     )
 
     if info_step["stderr"] != "":

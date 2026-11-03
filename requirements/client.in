@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# CaP-X client-side environment: the agent harness ONLY.
+#
+# Deliberately contains no torch, no mujoco, no robosuite and no robocasa. The simulator runs
+# in its own process/venv (robocasa/capx_sim_server) and is reached over ZeroMQ; ground-truth
+# perception is served by that process over HTTP on the SAM3 contract. This file is what makes
+# the sim/real boundary structural rather than a promise -- see tests/test_isolation.py.
+#
+# Compile and sync FROM cap-x/ :
+#   uv pip compile requirements/client.in --override requirements/client-overrides.txt \
+#       --python-version 3.11 --no-config -o requirements/client.txt
+#   uv pip sync requirements/client.txt --python .venv-client --no-config
+#   uv pip install --no-deps -e . --python .venv-client --no-config   # MUST follow every sync
+#
+# --no-config is mandatory: this directory's pyproject.toml carries [tool.uv]
+# override-dependencies (numpy==1.26.4, jax<0.4.30, ...) which uv applies as *configuration*
+# and which silently win over explicit pins here.
+# ---------------------------------------------------------------------------
+
+# transport to the simulator
+pyzmq
+msgpack
+msgpack-numpy
+
+# harness core (from the import graph of capx/envs, capx/integrations, capx/utils, capx/llm)
+gymnasium
+numpy
+scipy
+requests
+tyro
+omegaconf
+pyyaml
+openai
+rich
+pydantic
+tqdm
+cloudpickle
+matplotlib
+pillow
+imageio[ffmpeg]
+opencv-python-headless
+fastapi
+uvicorn
+
+# imported at package-import time by capx/integrations/franka/* (unused but on the import path)
+open3d
+pyrender
+# PyOpenGL only because pyrender imports it; the client never renders (no mujoco here).
+# PyOpenGL-accelerate is deliberately absent: it is an optional C-extension speedup with no
+# wheel for this interpreter, and it fails to compile.
+PyOpenGL==3.1.6
+
+# IK is client-side: it is robot kinematics, shared between sim and real
+pyroki @ git+https://github.com/chungmin99/pyroki.git
+robot_descriptions>=1.16.0
+yourdfpy>=0.0.56
+viser
+trimesh
+
+pytest
+pytest-timeout

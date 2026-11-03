@@ -185,3 +185,17 @@ register_config(
         apis=["R1ProControlApi"],
     ),
 )
+
+# --- Remote robot (RoboCasa kitchen over IPC, or real hardware) -------------
+# One registration, not one per task: the task identity lives in the simulator process
+# (started with --task), so the harness side is task-agnostic.
+from .remote.robot_kitchen import RemoteRobotKitchenCodeEnv  # noqa: E402
+
+register_exec_env("remote_robot_code_env", RemoteRobotKitchenCodeEnv)
+register_config(
+    "remote_robot_code_env",
+    CodeExecEnvConfig(
+        low_level="remote_robot_low_level",
+        apis=["RemoteRobotApi"],
+    ),
+)

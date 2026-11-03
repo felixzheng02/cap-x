@@ -1,0 +1,6 @@
+# pyrender hard-requires PyOpenGL-accelerate, a C extension with no wheel for this interpreter
+# whose source build fails against numpy 2.4 (`src/wrapper.c` compile error). It is purely an
+# optional speedup -- PyOpenGL falls back to its pure-Python path without it -- and the client
+# never renders with OpenGL anyway (no mujoco in this environment; pyrender is only on the
+# import path of capx/integrations/franka/*, which we do not use).
+PyOpenGL-accelerate ; sys_platform == 'never'

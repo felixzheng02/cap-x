@@ -68,3 +68,12 @@ except Exception:
     # import traceback
     print("R1Pro not installed!")
     # traceback.print_exc()
+
+# Remote robot (simulator or hardware) reached over ZeroMQ. Needs no robosuite/mujoco locally:
+# the driver runs in its own process and environment. See robocasa/capx_sim_server/.
+try:
+    from .remote_robot import RemoteRobotEnv
+
+    register_env("remote_robot_low_level", RemoteRobotEnv)
+except Exception as _e:
+    print(f"Remote robot env unavailable: {_e}")
