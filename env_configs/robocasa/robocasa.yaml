@@ -1,10 +1,11 @@
-# RoboCasa365 via a remote robot driver. The simulator runs in a SEPARATE process and
-# environment (robocasa/capx_sim_server) and is reached over ZeroMQ; this side has no
-# robosuite, mujoco or robocasa installed at all.
+# Shared RoboCasa365 harness config. The task is NOT selected here — it is the
+# second process, started by run_experiment.sh:
 #
-# Launch with ../run_experiment.sh, which starts the simulator for the right task first.
-# Ground-truth perception is served BY the simulator on the usual SAM3 port (8114), so the
-# SAM3 server is deliberately NOT started here.
+#   ./run_experiment.sh OpenDrawer --total-trials 1 --record-video True
+#   ./run_experiment.sh PickPlaceCounterToStove --use-oracle-code True
+#
+# Ground-truth perception is served BY the simulator on the usual SAM3 port (8114),
+# so the SAM3 server is deliberately NOT started here.
 
 env:
   _target_: capx.envs.tasks.remote.robot_kitchen.RemoteRobotKitchenCodeEnv
@@ -14,6 +15,8 @@ env:
     privileged: false
     apis:
       - RemoteRobotApi
+    # Used only when --use-img-differencing True (see launch_utils._load_config).
+    # Single-turn runs strip this so the trial does not enter the regenerate loop.
     multi_turn_prompt: |
       The following code was just executed on the robot:
       ```python
@@ -41,8 +44,7 @@ api_servers:
     target_link: panda_hand
 
 record_video: true
-output_dir: ./outputs/robocasa_open_drawer_qwen_multiturn
-
+output_dir: ./outputs/robocasa
 trials: 1
 num_workers: 1
 
@@ -51,6 +53,7 @@ num_workers: 1
 # defaults say /chat/completions, which a vLLM server answers with 404.
 # Measured on tender: prompt 1,246 tok; 512x512 image 258 tok; decode 20.0 tok/s.
 # max_tokens 4096 => ~205 s worst-case decode, inside the 1200 s HTTP timeout.
+# Oracle runs ignore these (--use-oracle-code True).
 model: qwen3.8-27b
 server_url: http://127.0.0.1:8000/v1/chat/completions
 api_key: EMPTY
@@ -58,11 +61,11 @@ max_tokens: 4096
 temperature: 0.7
 reasoning_effort: medium
 
-# --- multi-turn with visual feedback ----------------------------------------
-# The simulator serves ground-truth segmentation on the SAM3 contract, and the same local
-# Qwen3.8 serves as the visual-differencing model. Two 512x512 frames cost ~516 tokens
-# (measured), so no downscaling is needed against the 32K budget.
-use_img_differencing: true
+# Off by default: each extra turn is minutes at 20 tok/s. Enable with
+#   CAPX_MULTITURN_LIMIT=2 ./run_experiment.sh OpenDrawer --use-img-differencing True
+# The same local Qwen serves as the visual-differencing model. Two 512x512 frames
+# cost ~516 tokens (measured), so no downscaling is needed against the 32K budget.
+use_img_differencing: false
 visual_differencing_model: qwen3.8-27b
 visual_differencing_model_server_url: http://127.0.0.1:8000/v1/chat/completions
 visual_differencing_model_api_key: EMPTY

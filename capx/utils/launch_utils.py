@@ -166,6 +166,17 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         "save_multiturn_prompts": configs_dict.get("save_multiturn_prompts", False),
     }
 
+    # Shared RoboCasa YAML keeps multi_turn_prompt on the env so one file can
+    # serve single- and multi-turn. Strip it unless visual feedback is on --
+    # otherwise every trial enters the regenerate loop (minutes per turn).
+    if not (
+        merged_config["use_img_differencing"]
+        or merged_config["use_video_differencing"]
+    ):
+        cfg = env_factory.get("cfg")
+        if isinstance(cfg, dict):
+            cfg.pop("multi_turn_prompt", None)
+
     return env_factory, merged_config, api_servers
 
 

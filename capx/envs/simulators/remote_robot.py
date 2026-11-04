@@ -1,6 +1,6 @@
 """BaseEnv proxy over a remote robot driver (simulated or real).
 
-A thin shell over :class:`capx.robot_client.RobotClient`. It exists only because the CaP-X
+A thin shell over :class:`robot_driver.RobotClient`. It exists only because the CaP-X
 harness needs a ``BaseEnv``; all real behaviour lives in the client, which is the piece shared
 with real hardware.
 
@@ -18,7 +18,18 @@ from typing import Any
 import numpy as np
 
 from capx.envs.base import BaseEnv
-from capx.robot_client import RobotClient
+from robot_driver import RobotClient
+
+
+def _init_pyroki():
+    """Injected into RobotClient so the shared driver imports no ``capx`` name.
+
+    Imported lazily: it reaches a pyroki service, and a client that never makes a
+    Cartesian move should not pay for it at construction.
+    """
+    from capx.integrations.motion.pyroki import init_pyroki
+
+    return init_pyroki()
 
 
 class RemoteRobotEnv(BaseEnv):
@@ -34,13 +45,17 @@ class RemoteRobotEnv(BaseEnv):
         timeout_ms: int = 120_000,
     ) -> None:
         super().__init__()
-        from capx.robot_client import protocol as P
+        from robot_driver import protocol as P
 
         self.privileged = privileged
         self.enable_render = enable_render
         self.viser_debug = viser_debug
 
-        self.client = RobotClient(endpoint or P.DEFAULT_ENDPOINT, timeout_ms=timeout_ms)
+        self.client = RobotClient(
+            endpoint or P.DEFAULT_ENDPOINT,
+            timeout_ms=timeout_ms,
+            ik_factory=_init_pyroki,
+        )
         self.max_steps = int(self.client.spec.get("max_steps", 5000))
         self._instruction = ""
         self._wrist_recording = False

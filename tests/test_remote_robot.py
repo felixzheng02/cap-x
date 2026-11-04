@@ -36,7 +36,7 @@ def test_simulator_packages_are_absent(module):
 
 
 def test_robot_client_module_imports_without_a_simulator():
-    from capx.robot_client import MotionProfile, RobotClient  # noqa: F401
+    from robot_driver import MotionProfile, RobotClient  # noqa: F401
 
     assert MotionProfile().min_base_cmd > 0.25, (
         "min_base_cmd must exceed the base stiction floor (frictionloss 250 vs gain 1000)"
@@ -81,7 +81,7 @@ def _sim_available() -> bool:
     try:
         import zmq
 
-        from capx.robot_client import protocol as P
+        from robot_driver import protocol as P
 
         ctx = zmq.Context()
         sock = ctx.socket(zmq.DEALER)
@@ -102,7 +102,7 @@ live = pytest.mark.skipif(not _sim_available(), reason="no simulator listening")
 
 @pytest.fixture(scope="module")
 def rc():
-    from capx.robot_client import RobotClient
+    from robot_driver import RobotClient
 
     client = RobotClient(ENDPOINT)
     client.reset()
@@ -161,7 +161,7 @@ def test_depth_has_calibration(rc):
 def test_timeout_does_not_poison_the_socket(rc):
     """A DEALER socket must survive a timeout; REQ/REP would be unusable afterwards, and the
     harness retries timed-out trials up to three times."""
-    from capx.robot_client import protocol as P
+    from robot_driver import protocol as P
 
     with pytest.raises(TimeoutError):
         rc.call(P.STEP, {"action": rc.build_action().tolist()}, timeout_ms=1)
